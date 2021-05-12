@@ -1,0 +1,72 @@
+# This workflow will build a docker container, publish it to
+# Google Container Registry, and deploy it on Cloud Run when
+# a commit is pushed on master or stage branches.
+#
+# Workflow environment variables will be acquired from GitHub
+# secrets according to prefixes, being PRD for production and
+# STG for staging.
+#
+
+name: Build & Deploy
+on:
+  push:
+    branches:
+      - master
+      - stage
+
+env:
+  REGISTRY_HOSTNAME: gcr.io
+  REGISTRY_IMAGE_NAME: ${{ github.event.repository.name }}
+  CLOUD_RUN_SERVICE_NAME: ${{ github.event.repository.name }}
+  CLOUD_RUN_REGION: us-east1
+  CLOUD_RUN_CPU: 1
+  CLOUD_RUN_MEMORY: 2Gi
+  CLOUD_RUN_TIMEOUT: 120s
+  CLOUD_RUN_MAX_INSTANCES: 20
+  CLOUD_RUN_CONCURRENCY: 250
+
+jobs:
+  deploy:
+    name: Build & Deploy
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: "Use Checkout"
+      uses: actions/checkout@v2
+
+    - name: "Authenticate Google Cloud Platform"
+      if: endsWith(github.ref, '/master')
+      uses: google-github-actions/setup-gcloud@master
+      with:
+        service_account_key: ${{ secrets.GCP_SERVICE_ACCOUNT_KEY }}
+
+    - name: "Configure Google Cloud CLI"
+      run: gcloud auth configure-docker
+      
+    - name: "Build Container Image"
+      run: docker build . -t $REGISTRY_HOSTNAME/$GCP_PROJECT/$REGISTRY_IMAGE_NAME:${{ github.sha }}
+          
+    - name: "Publish Image to Container Registry"
+      run: docker push $REGISTRY_HOSTNAME/$GCP_PROJECT/$REGISTRY_IMAGE_NAME:${{ github.sha }}
+
+    - name: "Deploy Image on Cloud Run"
+      run: |
+        gcloud run deploy $CLOUD_RUN_SERVICE_NAME \
+          --project $GCP_PROJECT \
+          --image $REGISTRY_HOSTNAME/$GCP_PROJECT/$REGISTRY_IMAGE_NAME:${{ github.sha }} \
+          --region $CLOUD_RUN_REGION \
+          --cpu $CLOUD_RUN_CPU \
+          --memory $CLOUD_RUN_MEMORY \
+          --timeout $CLOUD_RUN_TIMEOUT \
+          --max-instances $CLOUD_RUN_MAX_INSTANCES \
+          --concurrency $CLOUD_RUN_CONCURRENCY \
+          --platform managed \
+          --allow-unauthenticated \
+          --port 3000 \
+          --set-env-vars="JAVA_OPTS=-Xmx2048m" \
+          --set-env-vars="MB_DB_TYPE=$MB_DB_TYPE" \
+          --set-env-vars="MB_DB_DBNAME=$MB_DB_DBNAME" \
+          --set-env-vars="MB_DB_PORT=$MB_DB_PORT" \
+          --set-env-vars="MB_DB_USER=$MB_DB_USER" \
+          --set-env-vars="MB_DB_PASS=$MB_DB_PASS" \
+          --set-env-vars="MB_DB_HOST=$MB_DB_HOST" \
