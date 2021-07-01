@@ -1,10 +1,6 @@
 # This workflow will build a docker container, publish it to
 # Google Container Registry, and deploy it on Cloud Run when
-# a commit is pushed on master or stage branches.
-#
-# Workflow environment variables will be acquired from GitHub
-# secrets according to prefixes, being PRD for production and
-# STG for staging.
+# a commit is pushed on master branch.
 #
 
 name: Build & Deploy
@@ -12,7 +8,6 @@ on:
   push:
     branches:
       - master
-      - stage
 
 env:
   REGISTRY_HOSTNAME: gcr.io
@@ -20,9 +15,9 @@ env:
   CLOUD_RUN_SERVICE_NAME: ${{ github.event.repository.name }}
   CLOUD_RUN_REGION: us-east1
   CLOUD_RUN_CPU: 1
-  CLOUD_RUN_MEMORY: 2Gi
+  CLOUD_RUN_MEMORY: 4Gi
   CLOUD_RUN_TIMEOUT: 120s
-  CLOUD_RUN_MAX_INSTANCES: 20
+  CLOUD_RUN_MAX_INSTANCES: 1
   CLOUD_RUN_CONCURRENCY: 250
 
 jobs:
@@ -42,10 +37,10 @@ jobs:
 
     - name: "Configure Google Cloud CLI"
       run: gcloud auth configure-docker
-      
+
     - name: "Build Container Image"
       run: docker build . -t $REGISTRY_HOSTNAME/$GCP_PROJECT/$REGISTRY_IMAGE_NAME:${{ github.sha }}
-          
+
     - name: "Publish Image to Container Registry"
       run: docker push $REGISTRY_HOSTNAME/$GCP_PROJECT/$REGISTRY_IMAGE_NAME:${{ github.sha }}
 
@@ -63,10 +58,29 @@ jobs:
           --platform managed \
           --allow-unauthenticated \
           --port 3000 \
-          --set-env-vars="JAVA_OPTS=-Xmx2048m" \
+          --set-env-vars="JAVA_OPTS=-Xmx4096m" \
           --set-env-vars="MB_DB_TYPE=$MB_DB_TYPE" \
-          --set-env-vars="MB_DB_DBNAME=$MB_DB_DBNAME" \
+          --set-env-vars="MB_DB_HOST=$MB_DB_HOST" \
           --set-env-vars="MB_DB_PORT=$MB_DB_PORT" \
+          --set-env-vars="MB_DB_DBNAME=$MB_DB_DBNAME" \
           --set-env-vars="MB_DB_USER=$MB_DB_USER" \
           --set-env-vars="MB_DB_PASS=$MB_DB_PASS" \
-          --set-env-vars="MB_DB_HOST=$MB_DB_HOST" \
+
+    - name: "Create Keep Alive"
+      run: |
+          gcloud scheduler jobs delete metabase-keep-alive \
+            --project $GCP_PROJECT \
+            --quiet || true
+          gcloud scheduler jobs create http metabase-keep-alive \
+            --project $GCP_PROJECT \
+            --schedule="*/5 * * * *" \
+            --http-method="get" \
+            --uri="$MB_HOST"
+
+    - name: "Check Container Ready"
+      timeout-minutes: 10
+      run: |
+        while [ "$(curl $MB_HOST/api/health)" != "{\"status\":\"ok\"}" ]; \
+          do curl -s -o /dev/null $MB_HOST; \
+          sleep 3; \
+          done
